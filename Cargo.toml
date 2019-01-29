@@ -1,0 +1,12 @@
+[package]
+name = "bitap"
+version = "0.1.0"
+authors = ["Alex Guerra <alex@heyimalex.com>"]
+edition = "2018"
+
+[dev-dependencies]
+criterion = "0.2"
+
+[[bench]]
+name = "bitap_search"
+harness = false
