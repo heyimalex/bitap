@@ -1,527 +1,302 @@
-pub mod reference;
-
+use std::cmp;
 use std::collections::HashMap;
 use std::mem;
 
-/// Match represents a single match of a pattern in a haystack.
+#[cfg(test)]
+extern crate quickcheck;
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
+
+#[cfg(test)]
+#[macro_use]
+extern crate lazy_static;
+
+#[cfg(test)]
+mod test;
+
+/// Match represents a single match of a pattern.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Match {
-    /// Distance is the edit distance for this match.
+    /// The edit distance for this match. Zero means it was an exact match,
+    /// one means a single edit, etc.
     pub distance: usize,
-    /// End is the index of the character (not necessarily byte) that _ends_
-    /// this match. Determining start position, nevermind the actual indexes
-    /// and byte offsets of the matching characters, is much more complex,
-    /// so for now this is all I'm returning.
+    /// The index that this match ends on. Determining start position isn't
+    /// possible (unless max_distance is zero), so this is all I'm returning.
     pub end: usize,
 }
 
-/// UnicodePattern represents a Unicode search string that's compiled to
-/// search through other Unicode text.
-pub struct UnicodePattern {
+static ERR_INVALID_PATTERN: &'static str = "invalid pattern length";
+
+/// Because of bitap's implementation details, patterns can only be as long as
+/// the system word size. This is used internally in all of the iterator
+/// adapters.
+#[inline]
+pub fn pattern_length_is_valid(pattern_length: usize) -> bool {
+    pattern_length > 0 && pattern_length < mem::size_of::<usize>() * 8
+}
+
+pub fn find<I: Iterator<Item = usize>>(
+    mask_iter: I,
+    pattern_length: usize,
+) -> Result<impl Iterator<Item = usize>, &'static str> {
+    if !pattern_length_is_valid(pattern_length) {
+        return Err(ERR_INVALID_PATTERN);
+    }
+    let mut r = !1usize;
+    let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
+        r |= mask;
+        r <<= 1;
+        if 0 == (r & (1usize << pattern_length)) {
+            return Some(i);
+        }
+        None
+    });
+    Ok(matches)
+}
+
+pub fn levenshtein<I: Iterator<Item = usize>>(
+    mask_iter: I,
+    pattern_length: usize,
+    max_distance: usize,
+) -> Result<impl Iterator<Item = Match>, &'static str> {
+    if !pattern_length_is_valid(pattern_length) {
+        return Err(ERR_INVALID_PATTERN);
+    }
+    let max_distance = cmp::min(max_distance, pattern_length);
+    let mut r: Vec<usize> = (0..=max_distance).map(|i| !1usize << i).collect();
+
+    let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
+        let mut prev_parent = r[0];
+        r[0] |= mask;
+        r[0] <<= 1;
+        for j in 1..r.len() {
+            let prev = r[j];
+            let current = (prev | mask) << 1;
+            let replace = prev_parent << 1;
+            let delete = r[j - 1] << 1;
+            let insert = prev_parent;
+            r[j] = current & insert & delete & replace;
+            prev_parent = prev;
+        }
+        for (k, rv) in r.iter().enumerate() {
+            if 0 == (rv & (1usize << pattern_length)) {
+                return Some(Match {
+                    distance: k,
+                    end: i,
+                });
+            }
+        }
+        None
+    });
+    Ok(matches)
+}
+
+pub fn optimal_string_alignment<I: Iterator<Item = usize>>(
+    mask_iter: I,
+    pattern_length: usize,
+    max_distance: usize,
+) -> Result<impl Iterator<Item = Match>, &'static str> {
+    if !pattern_length_is_valid(pattern_length) {
+        return Err(ERR_INVALID_PATTERN);
+    }
+    let max_distance = cmp::min(max_distance, pattern_length);
+    let mut r: Vec<usize> = (0..=max_distance).map(|i| !1usize << i).collect();
+    let mut t = vec![!1usize; max_distance];
+
+    let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
+        let mut prev_parent = r[0];
+        r[0] |= mask;
+        r[0] <<= 1;
+        for j in 1..r.len() {
+            let prev = r[j];
+            let current = (prev | mask) << 1;
+            let replace = prev_parent << 1;
+            let delete = r[j - 1] << 1;
+            let insert = prev_parent;
+            let transpose = (t[j - 1] | (mask << 1)) << 1;
+            r[j] = current & insert & delete & replace & transpose;
+            t[j - 1] = (prev_parent << 1) | mask;
+            prev_parent = prev;
+        }
+        for (k, rv) in r.iter().enumerate() {
+            if 0 == (rv & (1usize << pattern_length)) {
+                return Some(Match {
+                    distance: k,
+                    end: i,
+                });
+            }
+        }
+        None
+    });
+    Ok(matches)
+}
+
+pub enum StaticMaxDistance {
+    One = 1,
+    Two = 2,
+}
+
+pub fn levenshtein_static<I: Iterator<Item = usize>>(
+    mask_iter: I,
+    pattern_length: usize,
+    max_distance: StaticMaxDistance,
+) -> Result<impl Iterator<Item = Match>, &'static str> {
+    if !pattern_length_is_valid(pattern_length) {
+        return Err(ERR_INVALID_PATTERN);
+    }
+    let max_distance = cmp::min(max_distance as usize, pattern_length);
+    let mut r = [!1usize, !1usize << 1, !1usize << 2];
+
+    let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
+        let mut prev_parent = r[0];
+        r[0] |= mask;
+        r[0] <<= 1;
+        for j in (1..r.len()).take(max_distance) {
+            let prev = r[j];
+            let current = (prev | mask) << 1;
+            let replace = prev_parent << 1;
+            let delete = r[j - 1] << 1;
+            let insert = prev_parent;
+            r[j] = current & insert & delete & replace;
+            prev_parent = prev;
+        }
+        for (k, rv) in r.iter().take(max_distance + 1).enumerate() {
+            if 0 == (rv & (1usize << pattern_length)) {
+                return Some(Match {
+                    distance: k,
+                    end: i,
+                });
+            }
+        }
+        None
+    });
+    Ok(matches)
+}
+
+pub fn optimal_string_alignment_static<I: Iterator<Item = usize>>(
+    mask_iter: I,
+    pattern_length: usize,
+    max_distance: StaticMaxDistance,
+) -> Result<impl Iterator<Item = Match>, &'static str> {
+    if !pattern_length_is_valid(pattern_length) {
+        return Err(ERR_INVALID_PATTERN);
+    }
+    let max_distance = cmp::min(max_distance as usize, pattern_length);
+    let mut r = [!1usize, !1usize << 1, !1usize << 2];
+    let mut t = [!1usize, !1usize];
+
+    let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
+        let mut prev_parent = r[0];
+        r[0] |= mask;
+        r[0] <<= 1;
+        for j in (1..r.len()).take(max_distance) {
+            let prev = r[j];
+            let current = (prev | mask) << 1;
+            let replace = prev_parent << 1;
+            let delete = r[j - 1] << 1;
+            let insert = prev_parent;
+            let transpose = (t[j - 1] | (mask << 1)) << 1;
+            r[j] = current & insert & delete & replace & transpose;
+            t[j - 1] = (prev_parent << 1) | mask;
+            prev_parent = prev;
+        }
+        for (k, rv) in r.iter().take(max_distance + 1).enumerate() {
+            if 0 == (rv & (1usize << pattern_length)) {
+                return Some(Match {
+                    distance: k,
+                    end: i,
+                });
+            }
+        }
+        None
+    });
+    Ok(matches)
+}
+
+pub struct Pattern {
     length: usize,
     masks: HashMap<char, usize>,
 }
 
-impl UnicodePattern {
-    /// Compiles the search pattern. An error will be returned if the pattern
-    /// is empty, or if the pattern is longer than the system word size minus
-    /// one.
-    pub fn new(pattern: &str) -> Result<UnicodePattern, &'static str> {
+impl Pattern {
+
+    pub fn new(pattern: &str) -> Result<Pattern, &'static str> {
         let mut length = 0;
         let mut masks: HashMap<char, usize> = HashMap::new();
         for (i, c) in pattern.chars().enumerate() {
             length += 1;
-            match masks.get_mut(&c) {
-                Some(mask) => {
-                    *mask &= !(1usize << i);
-                }
-                None => {
-                    masks.insert(c, !0usize & !(1usize << i));
-                }
-            };
+            masks
+                .entry(c)
+                .and_modify(|mask| *mask &= !(1usize << i))
+                .or_insert(!(1usize << i));
         }
-        if length == 0 {
-            return Err("pattern must not be empty");
+        if !pattern_length_is_valid(length) {
+            return Err(ERR_INVALID_PATTERN);
         }
-        if length >= mem::size_of::<usize>() * 8 - 1 {
-            return Err("invalid pattern length");
+        Ok(Pattern { length, masks })
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    #[inline]
+    fn mask_iter<'a>(&'a self, text: &'a str) -> MaskIterator<'a> {
+        MaskIterator {
+            masks: &self.masks,
+            iter: text.chars(),
         }
-        return Ok(UnicodePattern { length, masks });
+    }
+
+    pub fn find<'a>(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
+        find(self.mask_iter(text), self.len()).unwrap()
+    }
+
+    pub fn lev<'a>(&'a self, text: &'a str, k: usize) -> impl Iterator<Item = Match> + 'a {
+        levenshtein(self.mask_iter(text), self.len(), k).unwrap()
+    }
+
+    pub fn osa<'a>(&'a self, text: &'a str, k: usize) -> impl Iterator<Item = Match> + 'a {
+        optimal_string_alignment(self.mask_iter(text), self.len(), k).unwrap()
+    }
+
+    pub fn lev_static<'a>(
+        &'a self,
+        text: &'a str,
+        k: StaticMaxDistance,
+    ) -> impl Iterator<Item = Match> + 'a {
+        levenshtein_static(self.mask_iter(text), self.len(), k).unwrap()
+    }
+
+    pub fn osa_static<'a>(
+        &'a self,
+        text: &'a str,
+        k: StaticMaxDistance,
+    ) -> impl Iterator<Item = Match> + 'a {
+        optimal_string_alignment_static(self.mask_iter(text), self.len(), k).unwrap()
     }
 }
 
-// AsciiPattern represents an ASCII search string that's compiled to search
-// through Unicode text.
-pub struct AsciiPattern {
-    length: usize,
-    masks: [usize; 256],
-}
-
-impl AsciiPattern {
-    /// Compiles the search pattern. An error will be returned if the pattern
-    /// is empty, the pattern contains non-ascii characters, or if the pattern
-    /// is longer than the system word size minus one.
-    pub fn new(pattern: &str) -> Result<AsciiPattern, &'static str> {
-        if pattern.len() == 0 {
-            return Err("pattern must not be empty");
-        }
-        if pattern.len() >= mem::size_of::<usize>() * 8 - 1 {
-            return Err("invalid pattern length");
-        }
-        if !pattern.is_ascii() {
-            return Err("pattern must be all ascii characters");
-        }
-        return Ok(Self::new_unchecked(pattern));
-    }
-    fn new_unchecked(pattern: &str) -> AsciiPattern {
-        let mut m = AsciiPattern {
-            length: pattern.len(),
-            masks: [!0usize; 256],
-        };
-        for (i, b) in pattern.bytes().enumerate() {
-            m.masks[b as usize] &= !(1usize << i);
-        }
-        return m;
-    }
-
-    // Converts this to an AsciiOnlyPattern, which can only be used to search
-    // ascii text.
-    pub fn to_ascii_only(self) -> AsciiOnlyPattern {
-        AsciiOnlyPattern(self)
-    }
-}
-
-pub struct UnicodeMaskIterator<'a> {
-    pattern: &'a UnicodePattern,
+pub struct MaskIterator<'a> {
+    masks: &'a HashMap<char, usize>,
     iter: std::str::Chars<'a>,
 }
 
-impl<'a> Iterator for UnicodeMaskIterator<'a> {
+impl<'a> Iterator for MaskIterator<'a> {
     type Item = usize;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|c| match self.pattern.masks.get(&c) {
+        self.iter.next().map(|c| match self.masks.get(&c) {
             Some(m) => *m,
             None => !0usize,
         })
     }
-}
-
-pub struct AsciiMaskIterator<'a> {
-    pattern: &'a AsciiPattern,
-    iter: std::str::Chars<'a>,
-}
-
-impl<'a> Iterator for AsciiMaskIterator<'a> {
-    type Item = usize;
 
     #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|c| {
-            if !c.is_ascii() {
-                return !0usize;
-            }
-            // Truncate to u8. This is taken from std::char::encode_utf8_raw;
-            // apparently the lsb of a char is ascii. Hopefully this doesn't
-            // change in future releases :)
-            let b = c as u8;
-            return self.pattern.masks[b as usize];
-        })
-    }
-}
-
-impl<'a> Searcher<'a> for UnicodePattern {
-    type MaskIter = UnicodeMaskIterator<'a>;
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.length
-    }
-
-    #[inline]
-    fn get_mask_iter(&'a self, text: &'a str) -> Self::MaskIter {
-        UnicodeMaskIterator {
-            pattern: self,
-            iter: text.chars(),
-        }
-    }
-}
-
-pub trait Searcher<'a> {
-    type MaskIter: Iterator<Item = usize>;
-
-    fn len(&self) -> usize;
-    fn get_mask_iter(&'a self, text: &'a str) -> Self::MaskIter;
-
-    #[inline]
-    fn find_iter(&'a self, text: &'a str) -> BitapFind<Self::MaskIter> {
-        BitapFind::new(self.get_mask_iter(text), self.len())
-    }
-    fn find(&'a self, text: &'a str) -> Option<usize> {
-        self.find_iter(text).next()
-    }
-
-    #[inline]
-    fn find_levenshtein_iter(
-        &'a self,
-        text: &'a str,
-        k: usize,
-    ) -> BitapLevenshtein<Self::MaskIter> {
-        BitapLevenshtein::new(self.get_mask_iter(text), self.len(), k)
-    }
-    fn find_levenshtein(&'a self, text: &'a str, k: usize) -> Option<Match> {
-        self.find_levenshtein_iter(text, k).next()
-    }
-
-    #[inline]
-    fn find_damerau_levenshtein_iter(
-        &'a self,
-        text: &'a str,
-        k: usize,
-    ) -> BitapDamerauLevenshtein<Self::MaskIter> {
-        BitapDamerauLevenshtein::new(self.get_mask_iter(text), self.len(), k)
-    }
-    fn find_damerau_levenshtein(&'a self, text: &'a str, k: usize) -> Option<Match> {
-        self.find_damerau_levenshtein_iter(text, k).next()
-    }
-}
-
-impl<'a> Searcher<'a> for AsciiPattern {
-    type MaskIter = AsciiMaskIterator<'a>;
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.length
-    }
-
-    #[inline]
-    fn get_mask_iter(&'a self, text: &'a str) -> Self::MaskIter {
-        AsciiMaskIterator {
-            pattern: self,
-            iter: text.chars(),
-        }
-    }
-}
-
-pub struct AsciiOnlyMaskIterator<'a> {
-    pattern: &'a AsciiPattern,
-    iter: std::str::Bytes<'a>,
-}
-
-impl<'a> Iterator for AsciiOnlyMaskIterator<'a> {
-    type Item = usize;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|b| self.pattern.masks[b as usize])
-    }
-}
-
-/// Like AsciiPattern, but can only be used to search ascii text. Using it to
-/// search through Unicode text will result in results that are incorrect.
-pub struct AsciiOnlyPattern(AsciiPattern);
-
-impl<'a> Searcher<'a> for AsciiOnlyPattern {
-    type MaskIter = AsciiOnlyMaskIterator<'a>;
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.0.length
-    }
-
-    #[inline]
-    fn get_mask_iter(&'a self, text: &'a str) -> Self::MaskIter {
-        AsciiOnlyMaskIterator {
-            pattern: &self.0,
-            iter: text.bytes(),
-        }
-    }
-}
-
-// Following this point are the core functions. They're implemented as iterator
-// adaptors that take an iterator of character masks and return an iterator of
-// matches.
-
-pub struct BitapFind<I> {
-    iter: std::iter::Enumerate<I>,
-    pattern_length: usize,
-    r: usize,
-}
-
-impl<I: Iterator<Item = usize>> BitapFind<I> {
-    #[inline]
-    fn new(mask_iter: I, pattern_length: usize) -> BitapFind<I> {
-        BitapFind {
-            iter: mask_iter.enumerate(),
-            pattern_length,
-            r: !1usize,
-        }
-    }
-}
-
-impl<I: Iterator<Item = usize>> Iterator for BitapFind<I> {
-    type Item = usize;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        for (i, mask) in self.iter.by_ref() {
-            self.r |= mask;
-            self.r <<= 1;
-            if 0 == (self.r & (1usize << self.pattern_length)) {
-                return Some(i + 1 - self.pattern_length);
-            }
-        }
-        None
-    }
-}
-
-pub struct BitapLevenshtein<I> {
-    iter: std::iter::Enumerate<I>,
-    pattern_length: usize,
-    r: Vec<usize>,
-}
-
-impl<I: Iterator<Item = usize>> BitapLevenshtein<I> {
-    #[inline]
-    fn new(mask_iter: I, pattern_length: usize, max_distance: usize) -> BitapLevenshtein<I> {
-        BitapLevenshtein {
-            iter: mask_iter.enumerate(),
-            pattern_length,
-            r: vec![!1usize; max_distance + 1],
-        }
-    }
-}
-
-impl<I: Iterator<Item = usize>> Iterator for BitapLevenshtein<I> {
-    type Item = Match;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        for (i, mask) in self.iter.by_ref() {
-            let mut prev_parent = self.r[0];
-            self.r[0] |= mask;
-            self.r[0] <<= 1;
-            for j in 1..self.r.len() {
-                let prev = self.r[j];
-                let current = (prev | mask) << 1;
-                let replace = prev_parent << 1;
-                let delete = self.r[j - 1] << 1;
-                let insert = prev_parent;
-                self.r[j] = current & insert & delete & replace;
-                prev_parent = prev;
-            }
-            for (k, rv) in self.r.iter().enumerate() {
-                if 0 == (rv & (1usize << self.pattern_length)) {
-                    return Some(Match {
-                        distance: k,
-                        end: i,
-                    });
-                }
-            }
-        }
-        None
-    }
-}
-
-pub struct BitapDamerauLevenshtein<I> {
-    iter: std::iter::Enumerate<I>,
-    pattern_length: usize,
-    r: Vec<usize>,
-    trans: Vec<usize>,
-}
-
-impl<I: Iterator<Item = usize>> BitapDamerauLevenshtein<I> {
-    #[inline]
-    fn new(mask_iter: I, pattern_length: usize, max_distance: usize) -> BitapDamerauLevenshtein<I> {
-        BitapDamerauLevenshtein {
-            iter: mask_iter.enumerate(),
-            pattern_length,
-            r: vec![!1usize; max_distance + 1],
-            trans: vec![!1usize; max_distance],
-        }
-    }
-}
-
-impl<I: Iterator<Item = usize>> Iterator for BitapDamerauLevenshtein<I> {
-    type Item = Match;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        for (i, mask) in self.iter.by_ref() {
-            let mut prev_parent = self.r[0];
-            self.r[0] |= mask;
-            self.r[0] <<= 1;
-            for j in 1..self.r.len() {
-                let prev = self.r[j];
-                let current = (prev | mask) << 1;
-                let replace = prev_parent << 1;
-                let delete = self.r[j - 1] << 1;
-                let insert = prev_parent;
-                let transpose = (self.trans[j - 1] | (mask << 1)) << 1;
-                self.r[j] = current & insert & delete & replace & transpose;
-                // roughly: the current letter matches the _next_ position in the parent.
-                self.trans[j - 1] = (prev_parent << 1) | mask;
-                prev_parent = prev;
-            }
-            for (k, rv) in self.r.iter().enumerate() {
-                if 0 == (rv & (1usize << self.pattern_length)) {
-                    return Some(Match {
-                        distance: k,
-                        end: i,
-                    });
-                }
-            }
-        }
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::reference;
-    use super::*;
-
-    #[test]
-    fn test_find() {
-        let funcs: Vec<Box<Fn(&str, &str) -> Vec<usize>>> = vec![
-            Box::new(|pattern, text| reference::find(pattern, text).collect()),
-            Box::new(|pattern, text| reference::BitapFast::new(pattern).find_iter(text).collect()),
-            Box::new(|pattern, text| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .find_iter(text)
-                    .collect()
-            }),
-            Box::new(|pattern, text| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .to_ascii_only()
-                    .find_iter(text)
-                    .collect()
-            }),
-            Box::new(|pattern, text| {
-                UnicodePattern::new(pattern)
-                    .unwrap()
-                    .find_iter(text)
-                    .collect()
-            }),
-        ];
-
-        let cases: Vec<(&str, &str, Vec<usize>)> = vec![
-            ("abba", "hey im abba", vec![7]),
-            ("alex", "alex alex alex", vec![0, 5, 10]),
-            ("alex", "nothing to match", vec![]),
-        ];
-
-        for case in cases.iter() {
-            for func in funcs.iter() {
-                assert_eq!(func(case.0, case.1), case.2);
-            }
-        }
-    }
-
-    #[test]
-    fn test_levenshtein() {
-        let funcs: Vec<Box<Fn(&str, &str, usize) -> Vec<Match>>> = vec![
-            Box::new(|pattern, text, k| reference::levenshtein(pattern, text, k).collect()),
-            Box::new(|pattern, text, k| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .find_levenshtein_iter(text, k)
-                    .collect()
-            }),
-            Box::new(|pattern, text, k| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .to_ascii_only()
-                    .find_levenshtein_iter(text, k)
-                    .collect()
-            }),
-            Box::new(|pattern, text, k| {
-                UnicodePattern::new(pattern)
-                    .unwrap()
-                    .find_levenshtein_iter(text, k)
-                    .collect()
-            }),
-        ];
-
-        let cases: Vec<(&str, &str, usize, Vec<_>)> = vec![(
-            "alex",
-            "hey im aelx",
-            2,
-            vec![
-                Match {
-                    distance: 2,
-                    end: 8,
-                },
-                Match {
-                    distance: 2,
-                    end: 9,
-                },
-                Match {
-                    distance: 2,
-                    end: 10,
-                },
-            ],
-        )];
-
-        for case in cases.iter() {
-            for func in funcs.iter() {
-                assert_eq!(func(case.0, case.1, case.2), case.3);
-            }
-        }
-    }
-
-    #[test]
-    fn test_damerau_levenshtein() {
-        let funcs: Vec<Box<Fn(&str, &str, usize) -> Vec<Match>>> = vec![
-            Box::new(|pattern, text, k| reference::damerau_levenshtein(pattern, text, k).collect()),
-            Box::new(|pattern, text, k| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .find_damerau_levenshtein_iter(text, k)
-                    .collect()
-            }),
-            Box::new(|pattern, text, k| {
-                AsciiPattern::new(pattern)
-                    .unwrap()
-                    .to_ascii_only()
-                    .find_damerau_levenshtein_iter(text, k)
-                    .collect()
-            }),
-            Box::new(|pattern, text, k| {
-                UnicodePattern::new(pattern)
-                    .unwrap()
-                    .find_damerau_levenshtein_iter(text, k)
-                    .collect()
-            }),
-        ];
-
-        let cases: Vec<(&str, &str, usize, Vec<_>)> = vec![(
-            "alex",
-            "hey im aelx",
-            2,
-            vec![
-                Match {
-                    distance: 2,
-                    end: 8,
-                },
-                Match {
-                    distance: 2,
-                    end: 9,
-                },
-                Match {
-                    distance: 1,
-                    end: 10,
-                },
-            ],
-        )];
-
-        for case in cases.iter() {
-            for func in funcs.iter() {
-                assert_eq!(func(case.0, case.1, case.2), case.3);
-            }
-        }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
     }
 }
