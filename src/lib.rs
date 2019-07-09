@@ -282,7 +282,8 @@ impl Pattern {
     }
 }
 
-pub struct MaskIterator<'a> {
+/// Combines the mask map and an iterator of chars into a stream of pattern masks.
+struct MaskIterator<'a> {
     masks: &'a HashMap<char, usize>,
     iter: std::str::Chars<'a>,
 }
