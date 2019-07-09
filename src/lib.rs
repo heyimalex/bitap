@@ -15,27 +15,32 @@ extern crate lazy_static;
 #[cfg(test)]
 mod test;
 
-/// Match represents a single match of a pattern.
+/// Match represents a single match of a pattern within a string.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Match {
     /// The edit distance for this match. Zero means it was an exact match,
     /// one means a single edit, etc.
     pub distance: usize,
-    /// The index that this match ends on. Determining start position isn't
-    /// possible (unless max_distance is zero), so this is all I'm returning.
+    /// The index that this match _ends_ on. Determining start position isn't
+    /// possible (unless `distance` is zero), so this is all you have access to.
     pub end: usize,
 }
 
 static ERR_INVALID_PATTERN: &'static str = "invalid pattern length";
 
-/// Because of bitap's implementation details, patterns can only be as long as
-/// the system word size. This is used internally in all of the iterator
-/// adapters.
+/// Returns whether the passed value is a valid pattern length.
+///
+/// Because of implementation details of the bitap algorithm itself, patterns
+/// can only be as long as the system word size minus one. That's 31/63
+/// depending on the architecture you're compiling for. Additionally, patterns
+/// with a length of zero are rejected.
 #[inline]
 pub fn pattern_length_is_valid(pattern_length: usize) -> bool {
     pattern_length > 0 && pattern_length < mem::size_of::<usize>() * 8
 }
 
+/// Iterator adapter for implementing bitap find over an iterator of pattern
+/// masks.
 pub fn find<I: Iterator<Item = usize>>(
     mask_iter: I,
     pattern_length: usize,
@@ -58,6 +63,8 @@ pub fn find<I: Iterator<Item = usize>>(
     Ok(matches)
 }
 
+/// Iterator adapter for implementing bitap for levenshtein distance over an
+/// iterator of pattern masks.
 pub fn levenshtein<I: Iterator<Item = usize>>(
     mask_iter: I,
     pattern_length: usize,
@@ -95,6 +102,8 @@ pub fn levenshtein<I: Iterator<Item = usize>>(
     Ok(matches)
 }
 
+/// Iterator adapter for implementing bitap for optimal string alignment
+/// distance over an iterator of pattern masks.
 pub fn optimal_string_alignment<I: Iterator<Item = usize>>(
     mask_iter: I,
     pattern_length: usize,
@@ -140,6 +149,8 @@ pub enum StaticMaxDistance {
     Two = 2,
 }
 
+/// Like the levenshtein iterator adapter, but optimized for max_distances of
+/// 1-2.
 pub fn levenshtein_static<I: Iterator<Item = usize>>(
     mask_iter: I,
     pattern_length: usize,
@@ -177,6 +188,8 @@ pub fn levenshtein_static<I: Iterator<Item = usize>>(
     Ok(matches)
 }
 
+/// Like the optimal_string_alignment iterator adapter, but optimized for
+/// max_distances of 1-2.
 pub fn optimal_string_alignment_static<I: Iterator<Item = usize>>(
     mask_iter: I,
     pattern_length: usize,
@@ -217,15 +230,30 @@ pub fn optimal_string_alignment_static<I: Iterator<Item = usize>>(
     Ok(matches)
 }
 
+/// A compiled pattern string that can be used to search text.
 pub struct Pattern {
     length: usize,
     masks: HashMap<char, usize>,
 }
 
 impl Pattern {
-
+    /// Compiles and returns a new pattern from the passed string. Will fail
+    /// if the passed pattern is empty or longer than the system word size.
     pub fn new(pattern: &str) -> Result<Pattern, &'static str> {
         let mut length = 0;
+        // Create a mapping from characters to character masks. A "character's
+        // mask" in this case is a bitmask where, for every index that
+        // character is used in the pattern string, the value is zero.
+        //
+        // Roughly if the pattern were "abcab" the character masks would be as
+        // follows (albeit reversed, so the first character corresponds to the
+        // least significant bit). The remaining bits are all set to 1.
+        //
+        //        abcab abcab
+        //   "a": X..X. 01101
+        //   "b": .X..X 10110
+        //   "c": ..X.. 11011
+        //
         let mut masks: HashMap<char, usize> = HashMap::new();
         for (i, c) in pattern.chars().enumerate() {
             length += 1;
@@ -240,6 +268,7 @@ impl Pattern {
         Ok(Pattern { length, masks })
     }
 
+    /// Returns the length of the pattern in characters.
     #[inline]
     pub fn len(&self) -> usize {
         self.length
@@ -253,32 +282,73 @@ impl Pattern {
         }
     }
 
+    /// Returns an iterator of character indexes where the pattern can be found
+    /// within the passed text.
+    ///
+    /// Unlike `str::matches`, it will find and return overlapping matches.
+    ///
+    /// ```
+    /// use bitap::{Pattern};
+    /// let pattern = Pattern::new("world")?;
+    /// assert_eq!(pattern.find("hello world").next(), Some(6));
+    /// # Ok::<(), &'static str>(())
+    /// ```
     pub fn find<'a>(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
         find(self.mask_iter(text), self.len()).unwrap()
     }
 
-    pub fn lev<'a>(&'a self, text: &'a str, k: usize) -> impl Iterator<Item = Match> + 'a {
-        levenshtein(self.mask_iter(text), self.len(), k).unwrap()
+    /// Returns an iterator of matches where the pattern matched the passed
+    /// text within a levenshtein distance of `max_distance`.
+    ///
+    /// ```
+    /// use bitap::{Pattern,Match};
+    /// let pattern = Pattern::new("wxrld")?;
+    /// let m = pattern.lev("hello world", 1).next();
+    /// assert_eq!(m, Some(Match{ distance: 1, end: 10 }));
+    /// # Ok::<(), &'static str>(())
+    /// ```
+    pub fn lev<'a>(
+        &'a self,
+        text: &'a str,
+        max_distance: usize,
+    ) -> impl Iterator<Item = Match> + 'a {
+        levenshtein(self.mask_iter(text), self.len(), max_distance).unwrap()
     }
 
-    pub fn osa<'a>(&'a self, text: &'a str, k: usize) -> impl Iterator<Item = Match> + 'a {
-        optimal_string_alignment(self.mask_iter(text), self.len(), k).unwrap()
+    /// Returns an iterator of matches where the pattern matched the passed
+    /// text within an optimal string alignment distance of `max_distance`.
+    ///
+    /// ```
+    /// use bitap::{Pattern,Match};
+    /// let pattern = Pattern::new("wrold")?;
+    /// let m = pattern.osa("hello world", 1).next();
+    /// assert_eq!(m, Some(Match{ distance: 1, end: 10 }));
+    /// # Ok::<(), &'static str>(())
+    /// ```
+    pub fn osa<'a>(
+        &'a self,
+        text: &'a str,
+        max_distance: usize,
+    ) -> impl Iterator<Item = Match> + 'a {
+        optimal_string_alignment(self.mask_iter(text), self.len(), max_distance).unwrap()
     }
 
+    /// The same as lev, but optimized for a `max_distance` of 1-2.
     pub fn lev_static<'a>(
         &'a self,
         text: &'a str,
-        k: StaticMaxDistance,
+        max_distance: StaticMaxDistance,
     ) -> impl Iterator<Item = Match> + 'a {
-        levenshtein_static(self.mask_iter(text), self.len(), k).unwrap()
+        levenshtein_static(self.mask_iter(text), self.len(), max_distance).unwrap()
     }
 
+    /// The same as osa, but optimized for a `max_distance` of 1-2.
     pub fn osa_static<'a>(
         &'a self,
         text: &'a str,
-        k: StaticMaxDistance,
+        max_distance: StaticMaxDistance,
     ) -> impl Iterator<Item = Match> + 'a {
-        optimal_string_alignment_static(self.mask_iter(text), self.len(), k).unwrap()
+        optimal_string_alignment_static(self.mask_iter(text), self.len(), max_distance).unwrap()
     }
 }
 
