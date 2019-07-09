@@ -1,17 +1,18 @@
 [package]
 name = "bitap"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Alex Guerra <alex@heyimalex.com>"]
 edition = "2018"
 
 license = "MIT"
-description = "Bitap implementation in rust"
+readme = "README.md"
+description = "Bitap implementation in rust."
 homepage = "https://github.com/heyimalex/bitap"
 repository = "https://github.com/heyimalex/bitap"
 keywords = ["bitap", "fuzzy", "search"]
 
 [dev-dependencies]
-bitap-reference = { path = "./bitap-reference", version = "0.1.0" }
+bitap-reference = { path = "./bitap-reference", version = "0.2.0" }
 quickcheck = "0.8"
 quickcheck_macros = "0.8"
 criterion = "0.2"
