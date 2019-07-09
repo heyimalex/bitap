@@ -61,6 +61,13 @@ fn bench_find(c: &mut Criterion) {
     c.bench_function("bitap::find", move |b| {
         b.iter(|| pattern.find(black_box(&TEXT)).collect::<Vec<_>>())
     });
+    c.bench_function("String::match_indices", move |b| {
+        b.iter(|| {
+            black_box(TEXT)
+                .match_indices(black_box(PATTERN))
+                .collect::<Vec<_>>()
+        })
+    });
 }
 
 fn bench_lev(c: &mut Criterion) {
