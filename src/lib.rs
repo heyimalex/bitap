@@ -43,12 +43,15 @@ pub fn find<I: Iterator<Item = usize>>(
     if !pattern_length_is_valid(pattern_length) {
         return Err(ERR_INVALID_PATTERN);
     }
+    // In find, unlike the other functions, we want to return the _start_ index of the
+    // matches because it's actually possible to recover.
+    let offset = pattern_length - 1;
     let mut r = !1usize;
     let matches = mask_iter.enumerate().filter_map(move |(i, mask)| {
         r |= mask;
         r <<= 1;
         if 0 == (r & (1usize << pattern_length)) {
-            return Some(i);
+            return Some(i - offset);
         }
         None
     });

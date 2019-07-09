@@ -175,7 +175,10 @@ fn debug_bitap(pattern: &str, text: &str, index: usize, state: &[usize]) {
 }
 
 pub fn find(pattern: &str, text: &str) -> FindResult {
-    reference(pattern, text, 0, false, false).map(|v| v.iter().map(|m| m.end).collect::<Vec<_>>())
+    reference(pattern, text, 0, false, false).map(|v| {
+        let offset = pattern.chars().count() - 1;
+        v.iter().map(|m| m.end - offset).collect::<Vec<_>>()
+    })
 }
 
 pub fn lev(pattern: &str, text: &str, max_distance: usize) -> BitapResult {

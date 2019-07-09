@@ -80,37 +80,37 @@ fn test_find() {
         TestCase::new(
             "alex",
             "hey im alex, how are you?",
-            "          0              ",
+            "       0                 ",
             0,
         ),
         TestCase::new(
             "aba",
             "abababababa",
-            "  0 0 0 0 0",
+            "0 0 0 0 0  ",
             0,
         ),
         TestCase::new(
             "alex",
             "hey im alex",
-            "        210",
+            "       0   ",
             2,
         ),
         TestCase::new(
             "alex",
             "hey im aelx",
-            "        222",
+            "           ",
             2,
         ),
         TestCase::new(
             "abcde",
             "bcde abde abccde abzde abdce",
-            "   1    1      1     1      ",
+            "                            ",
             1,
         ),
         TestCase::new(
             "abcde",
             "bcde",
-            "   1",
+            "    ",
             1,
         ),
     ];
@@ -123,7 +123,10 @@ fn test_find() {
                 case.expected_matches
                     .iter()
                     .filter_map(|m| if m.0 == 0 { Some(m.1) } else { None })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                "pattern: {:?}, text: {:?}",
+                case.pattern,
+                case.text,
             );
         }
     }

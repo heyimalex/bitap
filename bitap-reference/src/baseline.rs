@@ -73,8 +73,10 @@ pub fn baseline(
 }
 
 pub fn find(pattern: &str, text: &str) -> FindResult {
-    baseline(pattern, text, 0, DistanceFn::Levenshtein)
-        .map(|v| v.iter().map(|m| m.end).collect::<Vec<_>>())
+    baseline(pattern, text, 0, DistanceFn::Levenshtein).map(|v| {
+        let offset = pattern.chars().count() - 1;
+        v.iter().map(|m| m.end - offset).collect::<Vec<_>>()
+    })
 }
 
 pub fn lev(pattern: &str, text: &str, k: usize) -> BitapResult {
